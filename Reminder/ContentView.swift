@@ -10,7 +10,7 @@ enum ReminderStatus: String, Codable {
 }
 
 struct ReminderItem: Identifiable, Codable {
-// 1. 【数据模型】定义您的提醒事项的结构
+    // 1. 【数据模型】定义您的提醒事项的结构
     let id: UUID
     var name: String
     var account: String
@@ -224,31 +224,31 @@ struct ContentView: View {
             .toolbar {
                 // 点击按钮时，调用 manager 的方法添加一个新示例提醒
                 Button {
-                    manager.addExampleReminder()
+                    isShowingAddView = true
                 } label: {
                     Image(systemName: "plus.circle.fill")  // iOS 系统的加号图标
                 }
             }
             .sheet(item: $editingReminder) { reminder in
-                // 弹窗用于编辑现有项目 (item: $editingReminder)
-                AddReminderView(reminder: reminder) { updatedReminder in
+                // 弹窗用于编辑现有项目
+                AddReminderView(onSave: { updatedReminder in // 🚀 onSave 闭包作为第一个参数
                     manager.addOrUpdate(reminder: updatedReminder)
-                }
+                }, reminder: reminder) // 🚀 reminder 作为第二个参数
             }
             .sheet(isPresented: $isShowingAddView) {
-                // 弹窗用于添加新项目 (isPresented: $isShowingAddView)
-                // 传入一个空的/新的 ReminderItem
-                AddReminderView(
-                    reminder: ReminderItem(
-                        name: "",
-                        account: "",
-                        description: "",
-                        nextDueDate: Date(),
-                        recurrence: "每年重复"
-                    )
-                ) { newReminder in
+                // 弹窗用于添加新项目
+                AddReminderView(onSave: { newReminder in // 🚀 onSave 闭包作为第一个参数
                     manager.addOrUpdate(reminder: newReminder)
-                }
+                },
+                reminder: ReminderItem( // 🚀 reminder 作为第二个参数
+                    name: "",
+                    account: "",
+                    description: "",
+                    nextDueDate: Date(),
+                    recurrence: "每年重复",
+                    targetCount: 1,      // 🚀 新增：确保传入 targetCount
+                    currentCount: 0      // 🚀 新增：确保传入 currentCount
+                ))
             }
         }
     }
@@ -261,46 +261,43 @@ struct AddReminderView: View {
 
     // 🚀 传入一个完整的 ReminderItem，用于初始化表单
     @State var reminder: ReminderItem
-    // 用于保存用户在界面上的输入状态，从传入的 reminder 中初始化
-    @State private var name: String
-    @State private var account: String
-    @State private var description: String
-    @State private var dueDate: Date
-    @State private var recurrence: String
 
     let recurrenceOptions = ["一次性任务", "每月初提醒", "每年重复", "自定义..."]
-    // 🚀 初始化方法：将传入的 reminder 的值赋值给 @State 变量
-    init(reminder: ReminderItem, onSave: @escaping (ReminderItem) -> Void) {
-        self.onSave = onSave
-        self._reminder = State(initialValue: reminder)
-        self._name = State(initialValue: reminder.name)
-        self._account = State(initialValue: reminder.account)
-        self._description = State(initialValue: reminder.description)
-        self._dueDate = State(initialValue: reminder.nextDueDate)
-        self._recurrence = State(initialValue: reminder.recurrence)
-    }
+
     var body: some View {
         NavigationView {
             Form {
                 // ... (表单内容保持不变)
                 Section(header: Text("核心信息")) {
-                    TextField("提醒名称 (例如: 万豪房券)", text: $name)
-                    TextField("关联账户 (例如: Marriott)", text: $account)
+                    TextField("提醒名称 (例如: 万豪房券)", text: $reminder.name)
+                    TextField("关联账户 (例如: Marriott)", text: $reminder.account)
                 }
-                Section(header: Text("时间与频率")) {
-                    DatePicker(
-                        "下一个到期日",
-                        selection: $dueDate,
-                        displayedComponents: .date
+                // --- 目标和频率 ---
+                Section(header: Text("目标和频率")) {
+                    // 🚀 新增：目标计数输入，绑定到 $reminder.targetCount
+                    // 计数范围从 1 次到 20 次，如果任务是计数型，targetCount > 1
+                    Stepper(
+                        "目标次数: \(reminder.targetCount)",
+                        value: $reminder.targetCount,
+                        in: 1...20
                     )
-                    Picker("重复频率", selection: $recurrence) {
+
+                    // 频率选择器 (绑定到 $reminder.recurrence)
+                    Picker("重复频率", selection: $reminder.recurrence) {
                         ForEach(recurrenceOptions, id: \.self) { option in
                             Text(option)
                         }
                     }
                 }
+                Section(header: Text("时间与频率")) {
+                    DatePicker(
+                        "下一个到期日",
+                        selection: $reminder.nextDueDate,
+                        displayedComponents: .date
+                    )
+                }
                 Section(header: Text("详细描述")) {
-                    TextEditor(text: $description)
+                    TextEditor(text: $reminder.description)
                         .frame(minHeight: 100)
                 }
             }
@@ -311,20 +308,27 @@ struct AddReminderView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
-                        // 1. 创建一个包含所有最新输入的 ReminderItem
-                        let updatedReminder = ReminderItem(
-                            id: reminder.id,  // 保持 ID 不变，这样 manager 知道要更新哪个
-                            name: name,
-                            account: account,
-                            description: description,
-                            nextDueDate: dueDate,
-                            recurrence: recurrence
-                        )
-                        // 2. 调用回调函数，将数据传回主列表进行保存/更新
-                        onSave(updatedReminder)
+                        // 1. 确保在保存时，任务状态和 currentCount 逻辑正确
+                        // 如果用户将目标次数从 5 改回 1，状态需要变回 .pending
+                        if reminder.targetCount <= 1
+                            && reminder.status != .completed
+                        {
+                            reminder.status = .pending
+                        } else if reminder.targetCount > 1
+                            && reminder.status != .completed
+                        {
+                            reminder.status = .inProgress
+                            // 如果 targetCount 变大了，currentCount 不能超过 targetCount
+                            if reminder.currentCount > reminder.targetCount {
+                                reminder.currentCount = reminder.targetCount
+                            }
+                        }
+
+                        // 2. 直接将修改后的 @State reminder 传回 ContentView
+                        onSave(reminder)
                         dismiss()
                     }
-                    .disabled(name.isEmpty || account.isEmpty)
+                    .disabled(reminder.name.isEmpty || reminder.account.isEmpty)
                 }
             }
         }
