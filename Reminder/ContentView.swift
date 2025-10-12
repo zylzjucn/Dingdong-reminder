@@ -70,7 +70,7 @@ class ReminderManager: ObservableObject {
         }
     }
 
-    // 🚀 【加载数据】从 UserDefaults 读取并解码
+    // 【加载数据】从 UserDefaults 读取并解码
     func load() {
         if let savedData = UserDefaults.standard.data(forKey: "Reminders") {
             if let decodedReminders = try? JSONDecoder().decode(
