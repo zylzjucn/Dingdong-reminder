@@ -9,8 +9,8 @@ enum ReminderStatus: String, Codable {
     case completed = "已完成"
 }
 
-// 1. 【数据模型】定义您的提醒事项的结构
 struct ReminderItem: Identifiable, Codable {
+// 1. 【数据模型】定义您的提醒事项的结构
     let id: UUID
     var name: String
     var account: String
@@ -261,7 +261,6 @@ struct AddReminderView: View {
 
     // 🚀 传入一个完整的 ReminderItem，用于初始化表单
     @State var reminder: ReminderItem
-
     // 用于保存用户在界面上的输入状态，从传入的 reminder 中初始化
     @State private var name: String
     @State private var account: String
@@ -270,19 +269,16 @@ struct AddReminderView: View {
     @State private var recurrence: String
 
     let recurrenceOptions = ["一次性任务", "每月初提醒", "每年重复", "自定义..."]
-
     // 🚀 初始化方法：将传入的 reminder 的值赋值给 @State 变量
     init(reminder: ReminderItem, onSave: @escaping (ReminderItem) -> Void) {
         self.onSave = onSave
         self._reminder = State(initialValue: reminder)
-
         self._name = State(initialValue: reminder.name)
         self._account = State(initialValue: reminder.account)
         self._description = State(initialValue: reminder.description)
         self._dueDate = State(initialValue: reminder.nextDueDate)
         self._recurrence = State(initialValue: reminder.recurrence)
     }
-
     var body: some View {
         NavigationView {
             Form {
@@ -291,21 +287,18 @@ struct AddReminderView: View {
                     TextField("提醒名称 (例如: 万豪房券)", text: $name)
                     TextField("关联账户 (例如: Marriott)", text: $account)
                 }
-
                 Section(header: Text("时间与频率")) {
                     DatePicker(
                         "下一个到期日",
                         selection: $dueDate,
                         displayedComponents: .date
                     )
-
                     Picker("重复频率", selection: $recurrence) {
                         ForEach(recurrenceOptions, id: \.self) { option in
                             Text(option)
                         }
                     }
                 }
-
                 Section(header: Text("详细描述")) {
                     TextEditor(text: $description)
                         .frame(minHeight: 100)
