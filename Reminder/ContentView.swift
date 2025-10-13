@@ -245,6 +245,7 @@ class ReminderManager: ObservableObject {
 }
 
 // 3. 【用户界面】主视图 ContentView
+// 3. 【用户界面】主视图 ContentView
 struct ContentView: View {
     // 声明数据管理器，@StateObject确保其生命周期与视图绑定
     @StateObject var manager = ReminderManager()
@@ -252,103 +253,93 @@ struct ContentView: View {
     // 🚀 增加一个状态，用于存储正在被编辑的提醒事项
     @State private var editingReminder: ReminderItem?
     // 🚀 新增状态：控制视图显示“未完成”还是“已完成”
-    @State private var selectedStatus: ReminderStatus = .pending
+    @State private var selectedStatus: ReminderStatus = .pending // .pending 用于代表“未完成”和“进行中”的任务
 
     // 🚀 计算属性：根据当前选择的状态过滤出要显示的列表
     var filteredReminders: [ReminderItem] {
         if selectedStatus == .completed {
             return manager.reminders.filter { $0.status == .completed }
         } else {
-            // "待完成" 和 "进行中" 视为同一类：未完成
+            // “待完成”(.pending) 和 “进行中”(.inProgress) 视为同一类：未完成
             return manager.reminders.filter { $0.status != .completed }
         }
     }
 
     var body: some View {
-        // NavigationView (或 Swift 5.0+ 的 NavigationStack) 提供标题和工具栏
         NavigationView {
+            VStack {
+                // 1. 添加状态切换器 (Segmented Picker)
+                Picker("任务状态", selection: $selectedStatus) {
+                    Text("待处理 (\(manager.reminders.filter { $0.status != .completed }.count))").tag(ReminderStatus.pending)
+                    Text("已完成 (\(manager.reminders.filter { $0.status == .completed }.count))").tag(ReminderStatus.completed)
+                }
+                .pickerStyle(.segmented)
+                .padding([.horizontal, .top]) // 增加一些边距
 
-            // List 用于展示可滚动的列表数据
-            List {
-                // ForEach 循环遍历管理器中的所有提醒事项
-                ForEach(manager.reminders) { item in
-
-                    // 垂直堆栈，用于布局单个提醒事项的细节
-                    VStack(alignment: .leading, spacing: 4) {
-
-                        // 第一行：标题和重复规则
-                        HStack {
-                            Text(item.name)
-                                .font(.headline)  // 粗体大字
-                            Spacer()  // 推出右侧的重复规则
-                            Text(item.recurrence)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-
-                        // 第二行：账户和到期日
-                        HStack {
-                            Text("账户: \(item.account)")
-                                .font(.subheadline)
-                                .foregroundColor(.gray)
-                            Spacer()
-                            // 日期格式化显示
-                            Text(
-                                "到期日: \(item.nextDueDate.formatted(date: .abbreviated, time: .omitted))"
-                            )
-                            .font(.subheadline)
-                            .foregroundColor(.orange)
-                        }
-
-                        // 第三行：详细描述
-                        Text(item.description)
-                            .font(.caption)
-                            .lineLimit(1)  // 限制一行显示
+                // List 用于展示可滚动的列表数据
+                List {
+                    // 2. 遍历过滤后的列表
+                    ForEach(filteredReminders) { item in
+                        // 3. 使用您创建的 ReminderRow 视图
+                        ReminderRow(
+                            item: item,
+                            manager: manager,
+                            editingReminder: $editingReminder
+                        )
                     }
-                    .padding(.vertical, 4)  // 上下留白
-                    // 🚀 【点击编辑】
-                    .onTapGesture {
-                        editingReminder = item
+                    // 4. 更新 .onDelete 逻辑以确保在过滤列表上的删除是安全的
+                    .onDelete { offsets in
+                        // 1. 找到要删除项目在 filteredReminders 中的 ID
+                        let remindersToDelete = offsets.map { filteredReminders[$0] }
+                        
+                        // 2. 将这些 ID 映射回 manager.reminders 列表中的原始索引
+                        let indicesToDelete = IndexSet(
+                            remindersToDelete.compactMap { reminder in
+                                manager.reminders.firstIndex(where: { $0.id == reminder.id })
+                            }
+                        )
+                        
+                        // 3. 使用原始索引集进行删除
+                        manager.delete(offsets: indicesToDelete)
                     }
                 }
-                // 🚀 【滑动删除】
-                .onDelete(perform: manager.delete)
-            }
+            } // end VStack
+            
             // 列表的导航栏标题
             .navigationTitle("账户提醒事项")
 
             // 导航栏右上角的按钮
             .toolbar {
-                // 点击按钮时，调用 manager 的方法添加一个新示例提醒
+                // ... (ToolbarItem 保持不变)
                 Button {
                     isShowingAddView = true
                 } label: {
-                    Image(systemName: "plus.circle.fill")  // iOS 系统的加号图标
+                    Image(systemName: "plus.circle.fill")
                 }
             }
             .sheet(item: $editingReminder) { reminder in
                 // 弹窗用于编辑现有项目
                 AddReminderView(
-                    onSave: { updatedReminder in  // 🚀 onSave 闭包作为第一个参数
+                    onSave: { updatedReminder in
                         manager.addOrUpdate(reminder: updatedReminder)
                     },
                     reminder: reminder
-                )  // 🚀 reminder 作为第二个参数
+                )
             }
             .sheet(isPresented: $isShowingAddView) {
                 // 弹窗用于添加新项目
                 AddReminderView(
-                    onSave: { newReminder in  // 🚀 onSave 闭包作为第一个参数
+                    onSave: { newReminder in
                         manager.addOrUpdate(reminder: newReminder)
                     },
-                    reminder: ReminderItem(  // 🚀 reminder 作为第二个参数
+                    reminder: ReminderItem(
                         name: "",
                         account: "",
                         description: "",
                         nextDueDate: Date(),
                         recurrence: "每年重复",
-                        targetCount: 1,  // 🚀 新增：确保传入 targetCount
-                        currentCount: 0  // 🚀 新增：确保传入 currentCount
+                        targetCount: 1,
+                        currentCount: 0
                     )
                 )
             }
@@ -434,6 +425,77 @@ struct AddReminderView: View {
                 }
             }
         }
+    }
+}
+
+// 新视图：单个提醒事项的行
+struct ReminderRow: View {
+    @State var item: ReminderItem // 传入单个项目
+    @ObservedObject var manager: ReminderManager // 访问管理器方法
+    @Binding var editingReminder: ReminderItem?  // 用于编辑弹窗
+    
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                
+                // 任务名称和账户信息
+                Text(item.name)
+                    .font(.headline)
+                    // 🚀 如果已完成，显示横线
+                    .strikethrough(item.status == .completed)
+                
+                HStack {
+                    Text("账户: \(item.account)").font(.subheadline).foregroundColor(.gray)
+                    Spacer()
+                    Text(item.recurrence).font(.caption).foregroundColor(.secondary)
+                }
+                
+                // 计数进度或截止日期
+                if item.targetCount > 1 {
+                    // 计数任务显示进度
+                    Text("进度: \(item.currentCount) / \(item.targetCount)").font(.caption).foregroundColor(.blue)
+                } else {
+                    // 一次性任务显示日期
+                    Text("到期日: \(item.nextDueDate.formatted(date: .abbreviated, time: .omitted))").font(.caption).foregroundColor(.orange)
+                }
+                
+                // 任务状态
+                Text(item.description).font(.caption).lineLimit(1)
+            }
+            .onTapGesture {
+                // 点击行时触发编辑
+                editingReminder = item
+            }
+            
+            Spacer()
+            
+            // 🚀 快捷操作按钮
+            VStack {
+                if item.status != .completed {
+                    // 未完成/进行中状态下
+                    if item.targetCount > 1 {
+                        // 计数任务：显示 +1 按钮
+                        Button("+1") {
+                            manager.incrementCount(item: item)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    } else {
+                        // 一次性任务：显示“完成”按钮
+                        Button("完成") {
+                            manager.completeTask(item: item)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.green)
+                    }
+                } else {
+                    // 已完成状态：显示一个圆圈图标
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                        .font(.title)
+                }
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 
