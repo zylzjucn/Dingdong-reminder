@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 import SwiftUI
+import UserNotifications
 
 // 定义任务状态
 enum ReminderStatus: String, Codable {
@@ -63,6 +64,9 @@ class ReminderManager: ObservableObject {
     // 初始化时调用加载方法
     init() {
         load()
+
+        // 🚀 在管理器初始化时请求通知权限
+        requestNotificationPermission()
 
         // 如果是第一次运行，列表为空，则加载初始示例数据
         if reminders.isEmpty {
@@ -127,6 +131,7 @@ class ReminderManager: ObservableObject {
 
     // 【新增/编辑】添加或更新提醒事项
     func addOrUpdate(reminder: ReminderItem) {
+        cancelNotification(for: reminder)
         if let index = reminders.firstIndex(where: { $0.id == reminder.id }) {
             // 如果找到匹配的 ID，则更新现有项目
             reminders[index] = reminder
@@ -134,10 +139,16 @@ class ReminderManager: ObservableObject {
             // 否则，添加新项目
             reminders.append(reminder)
         }
+        scheduleNotification(for: reminder)
     }
 
     // 【删除】
     func delete(offsets: IndexSet) {
+        for index in offsets {
+            let reminderToDelete = reminders[index]
+            // 🚀 删除前，先取消关联的通知
+            cancelNotification(for: reminderToDelete)
+        }
         reminders.remove(atOffsets: offsets)
     }
 
@@ -157,6 +168,80 @@ class ReminderManager: ObservableObject {
         )
         reminders.append(newReminder)
     }
+
+    func scheduleNotification(for reminder: ReminderItem) {
+        let center = UNUserNotificationCenter.current()
+
+        // 1. 定义通知的内容
+        let content = UNMutableNotificationContent()
+        content.title = "⏰ 提醒事项：\(reminder.name)"
+        content.body = "账户：\(reminder.account)。描述：\(reminder.description)"
+        content.sound = UNNotificationSound.default  // 默认通知声音
+
+        // 2. 定义触发器 (Trigger)
+        // 💡 这里的关键是使用 reminder.nextDueDate 来设置通知时间
+
+        // 获取提醒事项的日期组件 (年、月、日、时、分)
+        let dateComponents = Calendar.current.dateComponents(
+            [.year, .month, .day, .hour, .minute],
+            from: reminder.nextDueDate
+        )
+
+        // UNCalendarNotificationTrigger 会在指定时间触发通知
+        // repeats: true 可以用于年/月重复，但设置年度重复需要额外的复杂逻辑来计算下一个日期。
+        // 为了简化，我们只设置一次，并在用户标记完成后重新设置。
+        let trigger = UNCalendarNotificationTrigger(
+            dateMatching: dateComponents,
+            repeats: false
+        )
+
+        // 3. 定义请求
+        // ⚠️ 使用 reminder.id.uuidString 作为唯一标识符，以便后续更新或取消
+        let request = UNNotificationRequest(
+            identifier: reminder.id.uuidString,
+            content: content,
+            trigger: trigger
+        )
+
+        // 4. 安排通知
+        center.add(request) { error in
+            if let error = error {
+                print("设置通知失败: \(error.localizedDescription)")
+            } else {
+                print("通知已成功安排，ID: \(reminder.id.uuidString)")
+            }
+        }
+    }
+
+    func completeTask(item: ReminderItem) {
+        // 1. 找到在数组中的索引
+        guard let index = reminders.firstIndex(where: { $0.id == item.id })
+        else { return }
+
+        // 2. 将状态设置为完成
+        reminders[index].status = .completed
+
+        // 3. ⚠️ 如果任务是重复的，您需要在**这里**计算下一个到期日并更新 nextDueDate
+        //    (现在暂不实现，留作下一步)
+
+        // 4. 清理通知（如果已完成，就不再提醒了）
+        cancelNotification(for: item)
+    }
+
+    func incrementCount(item: ReminderItem) {
+        guard let index = reminders.firstIndex(where: { $0.id == item.id })
+        else { return }
+
+        // 1. 增加当前计数
+        let newCount = reminders[index].currentCount + 1
+        reminders[index].currentCount = newCount
+
+        // 2. 检查是否达标
+        if newCount >= reminders[index].targetCount {
+            // 如果达标，调用 completeTask
+            completeTask(item: reminders[index])
+        }
+    }
 }
 
 // 3. 【用户界面】主视图 ContentView
@@ -166,6 +251,18 @@ struct ContentView: View {
     @State private var isShowingAddView = false
     // 🚀 增加一个状态，用于存储正在被编辑的提醒事项
     @State private var editingReminder: ReminderItem?
+    // 🚀 新增状态：控制视图显示“未完成”还是“已完成”
+    @State private var selectedStatus: ReminderStatus = .pending
+
+    // 🚀 计算属性：根据当前选择的状态过滤出要显示的列表
+    var filteredReminders: [ReminderItem] {
+        if selectedStatus == .completed {
+            return manager.reminders.filter { $0.status == .completed }
+        } else {
+            // "待完成" 和 "进行中" 视为同一类：未完成
+            return manager.reminders.filter { $0.status != .completed }
+        }
+    }
 
     var body: some View {
         // NavigationView (或 Swift 5.0+ 的 NavigationStack) 提供标题和工具栏
@@ -231,24 +328,29 @@ struct ContentView: View {
             }
             .sheet(item: $editingReminder) { reminder in
                 // 弹窗用于编辑现有项目
-                AddReminderView(onSave: { updatedReminder in // 🚀 onSave 闭包作为第一个参数
-                    manager.addOrUpdate(reminder: updatedReminder)
-                }, reminder: reminder) // 🚀 reminder 作为第二个参数
+                AddReminderView(
+                    onSave: { updatedReminder in  // 🚀 onSave 闭包作为第一个参数
+                        manager.addOrUpdate(reminder: updatedReminder)
+                    },
+                    reminder: reminder
+                )  // 🚀 reminder 作为第二个参数
             }
             .sheet(isPresented: $isShowingAddView) {
                 // 弹窗用于添加新项目
-                AddReminderView(onSave: { newReminder in // 🚀 onSave 闭包作为第一个参数
-                    manager.addOrUpdate(reminder: newReminder)
-                },
-                reminder: ReminderItem( // 🚀 reminder 作为第二个参数
-                    name: "",
-                    account: "",
-                    description: "",
-                    nextDueDate: Date(),
-                    recurrence: "每年重复",
-                    targetCount: 1,      // 🚀 新增：确保传入 targetCount
-                    currentCount: 0      // 🚀 新增：确保传入 currentCount
-                ))
+                AddReminderView(
+                    onSave: { newReminder in  // 🚀 onSave 闭包作为第一个参数
+                        manager.addOrUpdate(reminder: newReminder)
+                    },
+                    reminder: ReminderItem(  // 🚀 reminder 作为第二个参数
+                        name: "",
+                        account: "",
+                        description: "",
+                        nextDueDate: Date(),
+                        recurrence: "每年重复",
+                        targetCount: 1,  // 🚀 新增：确保传入 targetCount
+                        currentCount: 0  // 🚀 新增：确保传入 currentCount
+                    )
+                )
             }
         }
     }
@@ -333,6 +435,26 @@ struct AddReminderView: View {
             }
         }
     }
+}
+
+func requestNotificationPermission() {
+    UNUserNotificationCenter.current().requestAuthorization(options: [
+        .alert, .badge, .sound,
+    ]) { success, error in
+        if success {
+            print("通知权限已授权。")
+        } else if let error = error {
+            print("通知权限请求错误: \(error.localizedDescription)")
+            // 💡 实际应用中，您可能需要提醒用户去设置中手动开启
+        }
+    }
+}
+
+// ⚠️ 额外添加：清理旧通知的方法（在编辑或删除时使用）
+func cancelNotification(for reminder: ReminderItem) {
+    UNUserNotificationCenter.current().removePendingNotificationRequests(
+        withIdentifiers: [reminder.id.uuidString])
+    print("已取消旧通知: \(reminder.id.uuidString)")
 }
 
 #Preview {
