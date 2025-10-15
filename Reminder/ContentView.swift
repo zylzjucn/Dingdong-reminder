@@ -429,11 +429,16 @@ struct AddReminderView: View {
 }
 
 // 新视图：单个提醒事项的行
+// 新视图：单个提醒事项的行（已修复数据流问题）
 struct ReminderRow: View {
-    @State var item: ReminderItem // 传入单个项目
+    // ⚠️ 关键修复：将 @State var item 更改为 let item
+    // 接收来自 ContentView 传递的最新值，不再持有本地副本。
+    let item: ReminderItem
+    
     @ObservedObject var manager: ReminderManager // 访问管理器方法
     @Binding var editingReminder: ReminderItem?  // 用于编辑弹窗
     
+    // 【注意：现在 body 内部的 item 变量，总是 manager.reminders 数组中的最新数据】
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
@@ -464,7 +469,7 @@ struct ReminderRow: View {
             }
             .onTapGesture {
                 // 点击行时触发编辑
-                editingReminder = item
+                editingReminder = item // item 是最新的，没问题
             }
             
             Spacer()
@@ -476,6 +481,7 @@ struct ReminderRow: View {
                     if item.targetCount > 1 {
                         // 计数任务：显示 +1 按钮
                         Button("+1") {
+                            // 调用 Manager 方法更新数据
                             manager.incrementCount(item: item)
                         }
                         .buttonStyle(.borderedProminent)
