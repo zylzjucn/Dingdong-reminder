@@ -15,11 +15,14 @@ struct ReminderItem: Identifiable, Codable {
     var name: String
     var account: String
     var description: String
-    var nextDueDate: Date  // 房券到期日 / 任务重置日
+
+    // 【任务核心】任务到期/重置的截止日期
+    var nextDueDate: Date
     var recurrence: String  // 任务的年度周期 (例如: "每年重复")
 
-    // 🚀 新增属性：用于控制周期性提醒通知的频率
-    var notificationRecurrence: String  // 例如: "每月提醒", "每周提醒", "无提醒"
+    // 【提醒核心】下一次提醒的具体时间（新增）
+    var nextNotificationDate: Date  // 下一次通知的具体日期和时间
+    var notificationRecurrence: String  // 通知频率 (例如: "每月提醒", "每周提醒")
 
     var status: ReminderStatus
     var targetCount: Int
@@ -32,7 +35,9 @@ struct ReminderItem: Identifiable, Codable {
         description: String,
         nextDueDate: Date,
         recurrence: String,
-        notificationRecurrence: String = "每月提醒",  // 默认值
+        // 🚀 新增：默认的下一次提醒日期设置为到期日
+        nextNotificationDate: Date = Date(),
+        notificationRecurrence: String = "每月提醒",
         targetCount: Int = 1,
         currentCount: Int = 0
     ) {
@@ -42,7 +47,8 @@ struct ReminderItem: Identifiable, Codable {
         self.description = description
         self.nextDueDate = nextDueDate
         self.recurrence = recurrence
-        self.notificationRecurrence = notificationRecurrence  // 存储新的通知频率
+        self.nextNotificationDate = nextNotificationDate  // 使用新增字段
+        self.notificationRecurrence = notificationRecurrence
         self.targetCount = targetCount
         self.currentCount = currentCount
 
@@ -171,64 +177,209 @@ class ReminderManager: ObservableObject {
         reminders.append(newReminder)
     }
 
-    
+    // ⚠️ 原始的 scheduleNotification 现在用作总入口
     func scheduleNotification(for reminder: ReminderItem) {
+        // 先清理所有旧通知，防止冲突
+        cancelNotification(for: reminder)
+
+        // 只有当任务处于未完成状态时，才设置周期性提醒
+        if reminder.status != .completed {
+            schedulePeriodicNotification(for: reminder)
+        }
+
+        // 如果任务是重复的 (例如: 每年重置)，则设置一个“重置触发器”
+        if reminder.recurrence == "每年重复" || reminder.recurrence == "每月初提醒" {
+            scheduleResetTrigger(for: reminder)
+        }
+    }
+
+    // 🚀 辅助方法 1: 设置周期性提醒通知 (使用 nextNotificationDate 作为起始点)
+    private func schedulePeriodicNotification(for reminder: ReminderItem) {
         let center = UNUserNotificationCenter.current()
-
-        // 1. 定义通知的内容
         let content = UNMutableNotificationContent()
-        content.title = "⏰ 提醒事项：\(reminder.name)"
-        content.body = "账户：\(reminder.account)。描述：\(reminder.description)"
-        content.sound = UNNotificationSound.default  // 默认通知声音
-
-        // 2. 定义触发器 (Trigger)
-        // 💡 这里的关键是使用 reminder.nextDueDate 来设置通知时间
-
-        // 获取提醒事项的日期组件 (年、月、日、时、分)
-        let dateComponents = Calendar.current.dateComponents(
-            [.year, .month, .day, .hour, .minute],
-            from: reminder.nextDueDate
-        )
-
-        // UNCalendarNotificationTrigger 会在指定时间触发通知
-        // repeats: true 可以用于年/月重复，但设置年度重复需要额外的复杂逻辑来计算下一个日期。
-        // 为了简化，我们只设置一次，并在用户标记完成后重新设置。
-        let trigger = UNCalendarNotificationTrigger(
-            dateMatching: dateComponents,
-            repeats: false
-        )
-
-        // 3. 定义请求
-        // ⚠️ 使用 reminder.id.uuidString 作为唯一标识符，以便后续更新或取消
+        content.title = "⏰ 待办提醒：\(reminder.name)"
+        content.body = "账户：\(reminder.account)。请在到期日 \(reminder.nextDueDate.formatted(date: .abbreviated, time: .omitted)) 前完成。"
+        content.sound = UNNotificationSound.default
+        
+        var trigger: UNCalendarNotificationTrigger?
+        var repeats = true
+        
+        // 默认以用户设定的 nextNotificationDate 作为单次提醒
+        var components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .weekday], from: reminder.nextNotificationDate)
+        
+        // 如果是周期性提醒，则忽略 nextNotificationDate 的日期，只取时间，并设置重复规则
+        switch reminder.notificationRecurrence {
+        case "每周提醒":
+            // 设置每周在用户指定的 nextNotificationDate 的“周几”和“时间”重复
+            components.weekday = Calendar.current.component(.weekday, from: reminder.nextNotificationDate)
+            components.year = nil
+            components.month = nil
+            components.day = nil
+            trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
+            
+        case "每月提醒":
+            // 设置每月在用户指定的 nextNotificationDate 的“几号”和“时间”重复
+            components.day = Calendar.current.component(.day, from: reminder.nextNotificationDate)
+            components.year = nil
+            components.month = nil
+            trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
+            
+        case "无提醒":
+            // 仅设置一次，日期和时间都取 nextNotificationDate 的值
+            repeats = false
+            trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
+            
+        default:
+            return
+        }
+        
+        guard let finalTrigger = trigger else { return }
+        
+        let periodicID = "\(reminder.id.uuidString)_PERIODIC"
         let request = UNNotificationRequest(
-            identifier: reminder.id.uuidString,
+            identifier: periodicID,
             content: content,
-            trigger: trigger
+            trigger: finalTrigger
         )
-
-        // 4. 安排通知
+        
         center.add(request) { error in
             if let error = error {
-                print("设置通知失败: \(error.localizedDescription)")
+                print("设置周期性通知失败: \(error.localizedDescription)")
             } else {
-                print("通知已成功安排，ID: \(reminder.id.uuidString)")
+                print("周期性通知 (\(reminder.notificationRecurrence)) 已安排，ID: \(periodicID)")
             }
         }
     }
 
+
+    // 🚀 任务自动重置/复活 (`resetTask`)
+    func resetTask(taskID: UUID) {
+        guard let index = reminders.firstIndex(where: { $0.id == taskID }) else { return }
+        
+        guard reminders[index].status == .completed else { return }
+        
+        let originalItem = reminders[index]
+        
+        // 1. 计算下一个任务重置日 (nextDueDate)
+        var components = DateComponents()
+        if originalItem.recurrence == "每年重复" {
+            components.year = 1
+        } else if originalItem.recurrence == "每月初提醒" {
+            components.month = 1
+        } else {
+            return
+        }
+
+        if let newNextDueDate = Calendar.current.date(byAdding: components, to: originalItem.nextDueDate) {
+            reminders[index].nextDueDate = newNextDueDate
+        }
+        
+        // 2. 🚀 关键修改：重置 nextNotificationDate
+        // 将下一次提醒日设置为“今天”或“下一个到期日”之后的某个时间点。
+        // 为了简化，我们将其重置为当前的日期和时间。
+        reminders[index].nextNotificationDate = Date()
+        
+        // 3. 重置状态和计数
+        reminders[index].currentCount = 0
+        reminders[index].status = reminders[index].targetCount > 1 ? .inProgress : .pending
+        
+        // 4. 重新安排通知
+        scheduleNotification(for: reminders[index])
+        
+        print("任务 '\(originalItem.name)' 已在 \(Date().formatted()) 自动重置并安排了新的周期提醒。")
+    }
+
+    // 🚀 辅助方法 2: 设置任务重置触发器 (例如：明年的 9 月 25 日)
+    private func scheduleResetTrigger(for reminder: ReminderItem) {
+        let center = UNUserNotificationCenter.current()
+
+        // 1. 计算下一个重置日期（基于 nextDueDate 和 recurrence 字段）
+        var components = DateComponents()
+        if reminder.recurrence == "每年重复" {
+            components.year = 1
+        } else if reminder.recurrence == "每月初提醒" {
+            components.month = 1
+        } else {
+            return  // 如果不是重复任务，则不需要重置触发器
+        }
+
+        guard
+            let nextResetDate = Calendar.current.date(
+                byAdding: components,
+                to: reminder.nextDueDate
+            )
+        else { return }
+
+        // 2. 将实际的重置日期存储到 UserInfo 中，以便在通知触发时识别是哪个任务需要重置
+        let content = UNMutableNotificationContent()
+        content.title = "✅ 任务重置触发器：\(reminder.name)"
+        content.body = "这是一个内部触发器，用于重置任务。重置日：\(nextResetDate.formatted())"
+        content.sound = nil  // 内部触发器，不发声
+        content.userInfo = [
+            "taskID": reminder.id.uuidString, "action": "reset",
+        ]
+
+        let resetDateComponents = Calendar.current.dateComponents(
+            [.year, .month, .day],
+            from: nextResetDate
+        )
+        // 每天早上 8 点触发重置逻辑
+        var finalResetComponents = resetDateComponents
+        finalResetComponents.hour = 8
+        finalResetComponents.minute = 0
+
+        let trigger = UNCalendarNotificationTrigger(
+            dateMatching: finalResetComponents,
+            repeats: false
+        )
+
+        // ⚠️ 使用一个带有 "RESET" 后缀的 ID
+        let resetID = "\(reminder.id.uuidString)_RESET"
+        let request = UNNotificationRequest(
+            identifier: resetID,
+            content: content,
+            trigger: trigger
+        )
+
+        center.add(request) { error in
+            if let error = error {
+                print("设置重置触发器失败: \(error.localizedDescription)")
+            } else {
+                print("重置触发器已安排 (\(nextResetDate.formatted()))，ID: \(resetID)")
+            }
+        }
+    }
+
+    // ⚠️ 额外的通知清理：在编辑、删除或完成时调用
+    func cancelNotification(for reminder: ReminderItem) {
+        // 清理周期性提醒和重置触发器
+        UNUserNotificationCenter.current().removePendingNotificationRequests(
+            withIdentifiers: [
+                "\(reminder.id.uuidString)_PERIODIC",
+                "\(reminder.id.uuidString)_RESET",
+                reminder.id.uuidString,  // 原始的单次通知 ID
+            ]
+        )
+        print("已取消与任务 \(reminder.id.uuidString) 相关的所有通知。")
+    }
+
+    // 🚀 关键修改：完成任务时，停止周期提醒，并设置下一个年度重置
     func completeTask(item: ReminderItem) {
-        // 1. 找到在数组中的索引
         guard let index = reminders.firstIndex(where: { $0.id == item.id })
         else { return }
 
-        // 2. 将状态设置为完成
-        reminders[index].status = .completed
-
-        // 3. ⚠️ 如果任务是重复的，您需要在**这里**计算下一个到期日并更新 nextDueDate
-        //    (现在暂不实现，留作下一步)
-
-        // 4. 清理通知（如果已完成，就不再提醒了）
+        // 1. 取消所有周期性通知（停止骚扰用户）
         cancelNotification(for: item)
+
+        // 2. 标记任务为完成状态
+        reminders[index].status = .completed
+        reminders[index].currentCount = reminders[index].targetCount
+
+        // 3. 保持“重置触发器”不变！
+        // 因为我们在 scheduleNotification 中已经设置了年度重置触发器（ID: XXX_RESET）。
+        // 当任务完成时，我们只取消了周期性提醒（ID: XXX_PERIODIC），
+        // 这样到了下一个年度重置日，RESET 触发器仍然会启动，并调用 resetTask。
+        print("任务 '\(item.name)' 已完成。年度重置触发器保持不变，等待明年重置。")
     }
 
     func incrementCount(item: ReminderItem) {
@@ -378,7 +529,7 @@ struct AddReminderView: View {
                     TextField("关联账户 (例如: Marriott)", text: $reminder.account)
                 }
                 // --- 目标和频率 ---
-                Section(header: Text("目标和频率")) {
+                Section(header: Text("任务重置与目标")) {
                     // 🚀 新增：目标计数输入，绑定到 $reminder.targetCount
                     // 计数范围从 1 次到 20 次，如果任务是计数型，targetCount > 1
                     Stepper(
@@ -388,9 +539,16 @@ struct AddReminderView: View {
                     )
 
                     // 任务重复周期 (决定何时重置)
-                    Picker("任务重复周期", selection: $reminder.recurrence) {
+                    Picker("重置周期", selection: $reminder.recurrence) {
                         ForEach(recurrenceOptions, id: \.self) { Text($0) }
                     }
+
+                    // 任务到期/重置日 (决定何时触发年度重置)
+                    DatePicker(
+                        "任务到期/重置日",
+                        selection: $reminder.nextDueDate,
+                        displayedComponents: .date
+                    )
 
                     // 🚀 新增：通知提醒频率 (决定提醒用户的频率)
                     Picker(
@@ -402,26 +560,33 @@ struct AddReminderView: View {
                             Text(option)
                         }
                     }
+                }
+                Section(header: Text("通知提醒设置")) {
+                    // 通知提醒频率
+                    Picker(
+                        "提醒频率",
+                        selection: $reminder.notificationRecurrence
+                    ) {
+                        ForEach(notificationRecurrenceOptions, id: \.self) {
+                            option in
+                            Text(option)
+                        }
+                    }
 
+                    // 🚀 新增：下一次提醒的具体日期和时间
                     DatePicker(
-                        "下一个到期日 / 重置日",  // 引导用户这是任务的重置或结束日期
-                        selection: $reminder.nextDueDate,
-                        displayedComponents: .date
+                        "下一次提醒日",
+                        selection: $reminder.nextNotificationDate,
+                        displayedComponents: [.date, .hourAndMinute]
                     )
                 }
-                Section(header: Text("时间与频率")) {
-                    DatePicker(
-                        "下一个到期日",
-                        selection: $reminder.nextDueDate,
-                        displayedComponents: .date
-                    )
-                }
+
                 Section(header: Text("详细描述")) {
                     TextEditor(text: $reminder.description)
                         .frame(minHeight: 100)
                 }
             }
-            .navigationTitle(reminder.name.isEmpty ? "添加新提醒" : "编辑提醒")  // 根据名称判断标题
+            .navigationTitle(reminder.name.isEmpty ? "添加新任务" : "任务")  // 根据名称判断标题
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
