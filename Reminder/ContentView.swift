@@ -3,28 +3,28 @@ import Foundation
 import SwiftUI
 import UserNotifications
 
-// 定义任务状态
+// 定义任务状态（保持不变）
 enum ReminderStatus: String, Codable {
-    case pending = "待完成"  // 任务创建后的初始状态（非计数）
-    case inProgress = "进行中"  // 计数任务的初始状态
+    case pending = "待完成"
+    case inProgress = "进行中"
     case completed = "已完成"
 }
 
 struct ReminderItem: Identifiable, Codable {
-    // 1. 【数据模型】定义您的提醒事项的结构
     let id: UUID
     var name: String
     var account: String
     var description: String
-    var nextDueDate: Date
-    var recurrence: String
+    var nextDueDate: Date  // 房券到期日 / 任务重置日
+    var recurrence: String  // 任务的年度周期 (例如: "每年重复")
 
-    // 🚀 新增属性
+    // 🚀 新增属性：用于控制周期性提醒通知的频率
+    var notificationRecurrence: String  // 例如: "每月提醒", "每周提醒", "无提醒"
+
     var status: ReminderStatus
-    var targetCount: Int  // 目标完成次数 (例如 5 次刷卡)
-    var currentCount: Int  // 当前已完成次数 (例如 3/5)
+    var targetCount: Int
+    var currentCount: Int
 
-    // 初始化方法也要相应更新
     init(
         id: UUID = UUID(),
         name: String,
@@ -32,7 +32,8 @@ struct ReminderItem: Identifiable, Codable {
         description: String,
         nextDueDate: Date,
         recurrence: String,
-        targetCount: Int = 1,  // 默认为 1
+        notificationRecurrence: String = "每月提醒",  // 默认值
+        targetCount: Int = 1,
         currentCount: Int = 0
     ) {
         self.id = id
@@ -41,10 +42,10 @@ struct ReminderItem: Identifiable, Codable {
         self.description = description
         self.nextDueDate = nextDueDate
         self.recurrence = recurrence
+        self.notificationRecurrence = notificationRecurrence  // 存储新的通知频率
         self.targetCount = targetCount
         self.currentCount = currentCount
 
-        // 根据 targetCount 自动设置初始状态
         if targetCount > 1 {
             self.status = .inProgress
         } else {
@@ -52,6 +53,7 @@ struct ReminderItem: Identifiable, Codable {
         }
     }
 }
+
 // 2. 【数据管理器】用于存储和管理提醒事项的列表
 class ReminderManager: ObservableObject {
     @Published var reminders: [ReminderItem] = [] {
@@ -169,6 +171,7 @@ class ReminderManager: ObservableObject {
         reminders.append(newReminder)
     }
 
+    
     func scheduleNotification(for reminder: ReminderItem) {
         let center = UNUserNotificationCenter.current()
 
@@ -253,7 +256,7 @@ struct ContentView: View {
     // 🚀 增加一个状态，用于存储正在被编辑的提醒事项
     @State private var editingReminder: ReminderItem?
     // 🚀 新增状态：控制视图显示“未完成”还是“已完成”
-    @State private var selectedStatus: ReminderStatus = .pending // .pending 用于代表“未完成”和“进行中”的任务
+    @State private var selectedStatus: ReminderStatus = .pending  // .pending 用于代表“未完成”和“进行中”的任务
 
     // 🚀 计算属性：根据当前选择的状态过滤出要显示的列表
     var filteredReminders: [ReminderItem] {
@@ -270,11 +273,15 @@ struct ContentView: View {
             VStack {
                 // 1. 添加状态切换器 (Segmented Picker)
                 Picker("任务状态", selection: $selectedStatus) {
-                    Text("待处理 (\(manager.reminders.filter { $0.status != .completed }.count))").tag(ReminderStatus.pending)
-                    Text("已完成 (\(manager.reminders.filter { $0.status == .completed }.count))").tag(ReminderStatus.completed)
+                    Text(
+                        "待处理 (\(manager.reminders.filter { $0.status != .completed }.count))"
+                    ).tag(ReminderStatus.pending)
+                    Text(
+                        "已完成 (\(manager.reminders.filter { $0.status == .completed }.count))"
+                    ).tag(ReminderStatus.completed)
                 }
                 .pickerStyle(.segmented)
-                .padding([.horizontal, .top]) // 增加一些边距
+                .padding([.horizontal, .top])  // 增加一些边距
 
                 // List 用于展示可滚动的列表数据
                 List {
@@ -290,21 +297,25 @@ struct ContentView: View {
                     // 4. 更新 .onDelete 逻辑以确保在过滤列表上的删除是安全的
                     .onDelete { offsets in
                         // 1. 找到要删除项目在 filteredReminders 中的 ID
-                        let remindersToDelete = offsets.map { filteredReminders[$0] }
-                        
+                        let remindersToDelete = offsets.map {
+                            filteredReminders[$0]
+                        }
+
                         // 2. 将这些 ID 映射回 manager.reminders 列表中的原始索引
                         let indicesToDelete = IndexSet(
                             remindersToDelete.compactMap { reminder in
-                                manager.reminders.firstIndex(where: { $0.id == reminder.id })
+                                manager.reminders.firstIndex(where: {
+                                    $0.id == reminder.id
+                                })
                             }
                         )
-                        
+
                         // 3. 使用原始索引集进行删除
                         manager.delete(offsets: indicesToDelete)
                     }
                 }
-            } // end VStack
-            
+            }  // end VStack
+
             // 列表的导航栏标题
             .navigationTitle("账户提醒事项")
 
@@ -356,6 +367,7 @@ struct AddReminderView: View {
     @State var reminder: ReminderItem
 
     let recurrenceOptions = ["一次性任务", "每月初提醒", "每年重复", "自定义..."]
+    let notificationRecurrenceOptions = ["无提醒", "每周提醒", "每月提醒"]
 
     var body: some View {
         NavigationView {
@@ -375,12 +387,27 @@ struct AddReminderView: View {
                         in: 1...20
                     )
 
-                    // 频率选择器 (绑定到 $reminder.recurrence)
-                    Picker("重复频率", selection: $reminder.recurrence) {
-                        ForEach(recurrenceOptions, id: \.self) { option in
+                    // 任务重复周期 (决定何时重置)
+                    Picker("任务重复周期", selection: $reminder.recurrence) {
+                        ForEach(recurrenceOptions, id: \.self) { Text($0) }
+                    }
+
+                    // 🚀 新增：通知提醒频率 (决定提醒用户的频率)
+                    Picker(
+                        "通知提醒频率",
+                        selection: $reminder.notificationRecurrence
+                    ) {
+                        ForEach(notificationRecurrenceOptions, id: \.self) {
+                            option in
                             Text(option)
                         }
                     }
+
+                    DatePicker(
+                        "下一个到期日 / 重置日",  // 引导用户这是任务的重置或结束日期
+                        selection: $reminder.nextDueDate,
+                        displayedComponents: .date
+                    )
                 }
                 Section(header: Text("时间与频率")) {
                     DatePicker(
@@ -434,46 +461,53 @@ struct ReminderRow: View {
     // ⚠️ 关键修复：将 @State var item 更改为 let item
     // 接收来自 ContentView 传递的最新值，不再持有本地副本。
     let item: ReminderItem
-    
-    @ObservedObject var manager: ReminderManager // 访问管理器方法
+
+    @ObservedObject var manager: ReminderManager  // 访问管理器方法
     @Binding var editingReminder: ReminderItem?  // 用于编辑弹窗
-    
+
     // 【注意：现在 body 内部的 item 变量，总是 manager.reminders 数组中的最新数据】
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                
+
                 // 任务名称和账户信息
                 Text(item.name)
                     .font(.headline)
                     // 🚀 如果已完成，显示横线
                     .strikethrough(item.status == .completed)
-                
+
                 HStack {
-                    Text("账户: \(item.account)").font(.subheadline).foregroundColor(.gray)
+                    Text("账户: \(item.account)").font(.subheadline)
+                        .foregroundColor(.gray)
                     Spacer()
-                    Text(item.recurrence).font(.caption).foregroundColor(.secondary)
+                    Text(item.recurrence).font(.caption).foregroundColor(
+                        .secondary
+                    )
                 }
-                
+
                 // 计数进度或截止日期
                 if item.targetCount > 1 {
                     // 计数任务显示进度
-                    Text("进度: \(item.currentCount) / \(item.targetCount)").font(.caption).foregroundColor(.blue)
+                    Text("进度: \(item.currentCount) / \(item.targetCount)").font(
+                        .caption
+                    ).foregroundColor(.blue)
                 } else {
                     // 一次性任务显示日期
-                    Text("到期日: \(item.nextDueDate.formatted(date: .abbreviated, time: .omitted))").font(.caption).foregroundColor(.orange)
+                    Text(
+                        "到期日: \(item.nextDueDate.formatted(date: .abbreviated, time: .omitted))"
+                    ).font(.caption).foregroundColor(.orange)
                 }
-                
+
                 // 任务状态
                 Text(item.description).font(.caption).lineLimit(1)
             }
             .onTapGesture {
                 // 点击行时触发编辑
-                editingReminder = item // item 是最新的，没问题
+                editingReminder = item  // item 是最新的，没问题
             }
-            
+
             Spacer()
-            
+
             // 🚀 快捷操作按钮
             VStack {
                 if item.status != .completed {
