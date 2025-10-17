@@ -1,0 +1,12 @@
+{
+    "aps": {
+        "alert": {
+            "title": "Internal Reset Trigger",
+            "body": "This is a test notification to wake up the App."
+        },
+        "sound": "default",
+        "badge": 1
+    },
+    "taskID": "679C1393-9C6F-4AB6-9A85-CEC67A4265CB",
+    "action": "reset"
+}
